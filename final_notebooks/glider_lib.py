@@ -112,9 +112,10 @@ def generate_sample_glider_data(num_points=500, variable_col="Temperature",
                                  max_depth=150):
     """Simulate a sawtooth glider track with a synthetic variable field.
 
-    Used as a placeholder layer on the map so it isn't empty before a real
-    GLIDER.DATA_PATH file is configured -- same synthetic-data approach as
-    Glider_Curtain_Plot.ipynb Section 3.
+    Same synthetic-data approach as Glider_Curtain_Plot.ipynb Section 3, and still used by
+    that notebook and by Web_App_test.py. `Glider_Map_App.ipynb` no longer falls back to
+    this -- it reads the real archives through `load_glider_archive()` below -- so this is
+    kept for those other consumers rather than as the map's placeholder.
     """
     time = np.linspace(0, 10, num_points)
     lon = lon_range[0] + (lon_range[1] - lon_range[0]) * (time / time.max())
@@ -167,6 +168,10 @@ def load_glider_archive(mode="realtime", last_days=None, start=None, end=None):
 
     Raises FileNotFoundError if the archive is not on disk, so a caller can offer that
     rebuild command rather than failing obscurely.
+
+    `deployment` and `glider` come back as categoricals, as `read_archive()` returns them.
+    That is what keeps the delayed archive affordable to hold in memory; call
+    `.astype(str)` on either column if something downstream needs object dtype.
     """
     cproof = _cproof()
     path = cproof.archive_path(mode)
@@ -191,9 +196,14 @@ def glider_tracks(frame):
     the real-time file, spanning 2022 to 2026 -- so drawing one polyline over the whole
     frame would connect the end of one deployment to the start of the next with a
     straight line across the map. Splitting first is what keeps the tracks honest.
+
+    `observed=True` is passed explicitly because `deployment` is a categorical: a frame
+    narrowed by `last_days` still carries every deployment in the archive as a category,
+    so the default would hand back an empty group for each deployment outside the window.
+    pandas 3.0 made True the default, but this file should not depend on that.
     """
     return {name: group.sort_values("time")
-            for name, group in frame.groupby("deployment", sort=True)}
+            for name, group in frame.groupby("deployment", sort=True, observed=True)}
 
 
 def track_vertices(track):
