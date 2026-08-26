@@ -549,6 +549,15 @@ def read_archive(path: Path, start: str | None = None, end: str | None = None,
     science columns are loaded, which matters on the delayed archive -- reading all seven
     across three million observations is several hundred megabytes in memory, and most
     plots need one or two. Absent sensors come back as ``NaN``.
+
+    ``deployment`` and ``glider`` come back as categoricals. An archive holds millions of
+    observations but only a handful of distinct deployment names, so storing one full
+    string per row -- and splitting one per row to derive the glider -- costs far more
+    than the data itself: on the delayed archive those two steps alone took peak memory
+    to 2.4 GB for a 384 MB result, enough to kill a kernel with a few GB to work with.
+    Doing the same work over the handful of unique names instead holds the peak near
+    700 MB and the frame near 100 MB. Values are unchanged; call ``.astype(str)`` on
+    either column if a consumer genuinely needs object dtype back.
     """
     path = Path(path)
     wanted = list(SCIENCE_VARS if variables is None else variables)
@@ -565,8 +574,13 @@ def read_archive(path: Path, start: str | None = None, end: str | None = None,
             return pd.DataFrame(columns=columns)
         nc.set_auto_mask(False)
         names = np.array(list(nc.variables["deployment"][:]))
+        index = np.asarray(nc.variables["deployment_index"][:])
+        # The glider name is the second dash-separated field of the deployment name, so
+        # derive it from the handful of unique names rather than from every row.
+        gliders = np.array([name.split("-")[1] for name in names])
         fields = {
-            "deployment": names[nc.variables["deployment_index"][:]],
+            "deployment": pd.Categorical.from_codes(index, categories=names),
+            "glider": pd.Categorical(gliders[index]),
             "time": pd.to_datetime(nc.variables["time"][:], unit="s", utc=True),
             "latitude": nc.variables["latitude"][:],
             "longitude": nc.variables["longitude"][:],
@@ -578,8 +592,6 @@ def read_archive(path: Path, start: str | None = None, end: str | None = None,
             fields[name] = np.where(values >= FILL_VALUE * 0.99, np.nan, values)
         frame = pd.DataFrame(fields)
 
-    frame.insert(1, "glider", frame["deployment"].str.split("-").str[1])
-
     if last_days is not None:
         start = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=last_days)
     if start is not None:
@@ -587,7 +599,8 @@ def read_archive(path: Path, start: str | None = None, end: str | None = None,
     if end is not None:
         frame = frame[frame["time"] <= _as_utc(end)]
 
-    return frame[columns].sort_values("time").reset_index(drop=True)
+    # ignore_index rather than a trailing reset_index(), which would copy the frame again.
+    return frame[columns].sort_values("time", ignore_index=True)
 
 
 def high_water_marks(path: Path) -> dict[str, str]:
