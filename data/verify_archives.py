@@ -3,7 +3,8 @@
 
 Run this after a rebuild, or any time the archives look suspect::
 
-    python data/verify_archives.py
+    python data/verify_archives.py                  # both archives
+    python data/verify_archives.py --mode realtime  # only the tracked one
 
 It exercises the things that would quietly poison downstream work if they broke:
 CF metadata and time decoding via xarray (which is how most people will open these
@@ -11,11 +12,15 @@ files), the ``last_days`` windowing a dashboard depends on, per-variable coverag
 and the updater's idempotency. The catch-up test appends nothing -- it only checks
 that a simulated outage would resume from the right place.
 
-Exit status is 0 if every check passes, 1 otherwise.
+Exit status is 0 if every check passes, 1 otherwise. A requested archive that is
+missing counts as a failure, which is why ``--mode`` exists: the delayed archive is
+gitignored and so never present in a fresh checkout, and the scheduled job -- which
+only ever touches the real-time archive -- must not fail on its absence.
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -139,10 +144,20 @@ def check_idempotency(mode: str) -> None:
           f"appended {summary['appended']:,}, total {summary['total']:,}")
 
 
-def main() -> int:
-    realtime, delayed = cproof.REALTIME_ARCHIVE, cproof.DELAYED_ARCHIVE
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--mode", choices=["realtime", "delayed", "both"], default="both",
+                        help="which archives to verify (default: both). The scheduled job "
+                             "passes --mode realtime, because the delayed archive is "
+                             "gitignored and never exists in a fresh checkout")
+    args = parser.parse_args(argv)
 
-    for path in (realtime, delayed):
+    realtime, delayed = cproof.REALTIME_ARCHIVE, cproof.DELAYED_ARCHIVE
+    wanted = {"realtime": [realtime], "delayed": [delayed],
+              "both": [realtime, delayed]}[args.mode]
+
+    for path in wanted:
         if not path.exists():
             print(f"MISSING: {path.name} -- build it with "
                   f"`python data/update_cproof_glider.py --mode "
@@ -151,7 +166,7 @@ def main() -> int:
             continue
         check_xarray_roundtrip(path)
 
-    if realtime.exists():
+    if realtime in wanted and realtime.exists():
         check_dashboard_window(realtime)
         check_high_water_marks(realtime)
         check_idempotency("realtime")

@@ -43,7 +43,7 @@ jobs:
       # Runs against whatever the harvest just produced. If the archive is broken,
       # fail here rather than committing it.
       - name: Verify the archive
-        run: python data/verify_archives.py
+        run: python data/verify_archives.py --mode realtime
 
       - name: Commit the updated archive
         run: |
