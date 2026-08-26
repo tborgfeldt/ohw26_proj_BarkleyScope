@@ -1,0 +1,68 @@
+# Daily harvest of C-PROOF glider observations into the real-time archive.
+#
+# This runs on a personal fork rather than the oceanhackweek org repo, because the
+# job needs permission to push its own commits back and org repos commonly restrict
+# that for the Actions token.
+#
+# Note that GitHub disables scheduled workflows after 60 days without repository
+# activity -- a real prospect for a hackweek repo that goes quiet after the event.
+# The workflow_dispatch trigger below is the manual restart.
+
+name: Update glider archive
+
+on:
+  schedule:
+    - cron: "0 0 * * *"     # 00:00 UTC daily
+  workflow_dispatch:         # manual run button
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-glider-archive
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install --quiet pandas requests netCDF4 numpy xarray
+
+      - name: Harvest new real-time observations
+        run: python data/update_cproof_glider.py --mode realtime
+
+      # Runs against whatever the harvest just produced. If the archive is broken,
+      # fail here rather than committing it.
+      - name: Verify the archive
+        run: python data/verify_archives.py
+
+      - name: Commit the updated archive
+        run: |
+          if git diff --quiet -- data/cproof_glider_realtime.nc; then
+            echo "No new observations; nothing to commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/cproof_glider_realtime.nc
+          git commit -m "Update real-time glider archive ($(date -u +%Y-%m-%d))"
+          git push
+
+      # A fallback worth having: if the push step is ever blocked by branch
+      # protection, the harvested archive is still retrievable from the run.
+      - name: Upload the archive as an artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cproof-glider-realtime
+          path: data/cproof_glider_realtime.nc
+          retention-days: 14
