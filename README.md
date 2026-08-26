@@ -34,7 +34,7 @@ You can start with a simple structure and as you progress you can refine it to c
 ## Planning
 
 * Initial idea: "short description"
-* Ideation Slide: Add link
+* Ideation Slide: [Add link](https://docs.google.com/presentation/d/1_KLEDpLLvtKpH3awDlZRAiOKuHzbEti4CWmhEykuCG8/edit?slide=id.g3f85357d4e2_2_0#slide=id.g3f85357d4e2_2_0)
 * Slack channel: local-knowledge-app
 * Final presentation: Add link
 
