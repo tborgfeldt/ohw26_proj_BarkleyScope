@@ -1,8 +1,18 @@
 .ipynb_checkpoints
 __pycache__/
+*.pyc
 __marimo__/
 
 # Large/local data used by final_notebooks/Glider_Curtain_Plot.ipynb -- keep a local copy
 # alongside the notebook, but per the note in the Datasets section, don't commit it.
 Barkley_Sound_Bathymetry.nc
 NE_San_Diego_Trough_Aug_2022.csv
+
+# The delayed-mode archive is ~37 MB and fully reproducible from ERDDAP in a couple
+# of minutes, so it is rebuilt locally rather than carried in the repo:
+#     python data/update_cproof_glider.py --mode delayed
+# The real-time archive IS tracked -- it is small, and the scheduled job commits it.
+data/cproof_glider_delayed.nc
+
+# Superseded by the netCDF archives.
+data/cproof_barkley_gliders.csv
