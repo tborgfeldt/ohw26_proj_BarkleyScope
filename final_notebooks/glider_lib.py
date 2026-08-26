@@ -54,6 +54,30 @@ def standardize_longitude(lon):
 # 2. Real data loader (Glider_Curtain_Plot.ipynb Section 5)
 # ---------------------------------------------------------------------------
 
+def _netcdf_to_frame(path):
+    """Flatten a netCDF file to one row per observation.
+
+    `xr.Dataset.to_dataframe()` builds a MultiIndex over *every* dimension, so a file
+    carrying more than one -- like the C-PROOF archives, which pair a long `obs`
+    dimension with a short `deployment` one -- comes back as their cartesian product
+    rather than flattened. For `cproof_glider_realtime.nc` that turns 203,895
+    observations into 203,895 x 27 = 5.5 million rows; the delayed archive would reach
+    30 million and exhaust memory before returning.
+
+    Keeping only the variables that live on the longest dimension gives one row per
+    observation, which is what every plot here wants. Single-dimension files (the usual
+    CTD cast) are unaffected.
+    """
+    import xarray as xr
+
+    ds = xr.open_dataset(path)
+    if len(ds.dims) > 1:
+        obs_dim = max(ds.dims, key=lambda d: ds.sizes[d])
+        on_obs_dim = [name for name, var in ds.data_vars.items() if var.dims == (obs_dim,)]
+        ds = ds[on_obs_dim]
+    return ds.to_dataframe().reset_index()
+
+
 def load_platform_data(path, file_type, column_map):
     """Load a real glider track or CTD cast and standardize it to Longitude/Latitude/Depth/<variable>.
 
@@ -65,8 +89,7 @@ def load_platform_data(path, file_type, column_map):
     if file_type == "csv":
         raw = pd.read_csv(path)
     elif file_type in ("netcdf", "nc"):
-        import xarray as xr
-        raw = xr.open_dataset(path).to_dataframe().reset_index()
+        raw = _netcdf_to_frame(path)
     else:
         raise ValueError(f"Unsupported FILE_TYPE: {file_type!r} (expected 'csv' or 'netcdf')")
 
@@ -99,6 +122,102 @@ def generate_sample_glider_data(num_points=500, variable_col="Temperature",
     depth = (max_depth / 2) * (1 + np.sin(2 * np.pi * time))
     variable = 12 - (depth * 0.02) + np.random.normal(0, 0.3, num_points)
     return pd.DataFrame({"Longitude": lon, "Latitude": lat, "Depth": depth, variable_col: variable})
+
+
+# ---------------------------------------------------------------------------
+# 2b. C-PROOF glider archives (data/cproof_glider_{realtime,delayed}.nc)
+#
+# These are the real glider data, and they do not fit load_platform_data()'s
+# one-file-one-track assumption: each archive holds many deployments stacked on a
+# single `obs` dimension, joined to deployment names through `deployment_index`.
+# `data/cproof_glider.py` already reads that layout correctly, so these wrappers
+# delegate to it rather than reimplementing the join, and rename its columns to the
+# Longitude/Latitude/Depth the plot functions below expect.
+#
+# Temperature only, by choice. The archives carry seven science variables, but
+# temperature is the one flown on every deployment (the others range from ~9% to ~21%
+# missing, since not every glider carries an optode or a fluorometer), and reading one
+# variable instead of seven is what keeps the delayed archive tractable in memory.
+# ---------------------------------------------------------------------------
+
+#: The single variable these helpers read, and its axis/colourbar label with units.
+GLIDER_VARIABLE = "temperature"
+GLIDER_VARIABLE_LABEL = "Temperature (°C)"
+
+
+def _cproof():
+    """Import `data/cproof_glider.py`, which lives in a sibling directory of this file."""
+    import sys
+    from pathlib import Path
+
+    data_dir = Path(__file__).resolve().parent.parent / "data"
+    if str(data_dir) not in sys.path:
+        sys.path.insert(0, str(data_dir))
+    import cproof_glider
+
+    return cproof_glider
+
+
+def load_glider_archive(mode="realtime", last_days=None, start=None, end=None):
+    """Load temperature from a C-PROOF archive as Longitude/Latitude/Depth + deployment/time.
+
+    `mode` is "realtime" (committed to git, ~3 MB, what a "happening now" view reads) or
+    "delayed" (calibrated and hundreds of times denser, ~37 MB and gitignored -- rebuild
+    it with `python data/update_cproof_glider.py --mode delayed`).
+
+    Raises FileNotFoundError if the archive is not on disk, so a caller can offer that
+    rebuild command rather than failing obscurely.
+    """
+    cproof = _cproof()
+    path = cproof.archive_path(mode)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} is not on disk. The delayed archive is gitignored because of its size -- "
+            f"rebuild it with:  python data/update_cproof_glider.py --mode {mode}"
+        )
+
+    frame = cproof.read_archive(path, start=start, end=end, last_days=last_days,
+                                 variables=[GLIDER_VARIABLE])
+    frame = frame.rename(columns={"longitude": "Longitude", "latitude": "Latitude",
+                                   "depth": "Depth"})
+    frame["Longitude"] = standardize_longitude(frame["Longitude"])
+    return frame
+
+
+def glider_tracks(frame):
+    """Split an archive frame into one time-ordered track per deployment.
+
+    Returns {deployment_name: DataFrame}. Each archive stacks many deployments -- 27 in
+    the real-time file, spanning 2022 to 2026 -- so drawing one polyline over the whole
+    frame would connect the end of one deployment to the start of the next with a
+    straight line across the map. Splitting first is what keeps the tracks honest.
+    """
+    return {name: group.sort_values("time")
+            for name, group in frame.groupby("deployment", sort=True)}
+
+
+def track_vertices(track):
+    """Reduce one deployment to its distinct positions, in time order, for a map polyline.
+
+    Every observation in a profile shares one surfacing's GPS fix, so the raw frame
+    repeats each position many times over -- 203,895 real-time rows collapse to 11,619
+    actual vertices. Leaflet does not need the duplicates.
+    """
+    distinct = track.drop_duplicates(subset=["time", "Latitude", "Longitude"])
+    return list(zip(distinct["Latitude"], distinct["Longitude"]))
+
+
+def decimate(frame, max_points=4000):
+    """Thin a frame to at most `max_points` rows, evenly across it, preserving order.
+
+    A popup plot of a whole delayed-mode deployment can carry hundreds of thousands of
+    points, which Plotly will render but no browser will enjoy. Even striding keeps the
+    shape of the curtain while staying interactive.
+    """
+    if len(frame) <= max_points:
+        return frame
+    step = int(np.ceil(len(frame) / max_points))
+    return frame.iloc[::step]
 
 
 # ---------------------------------------------------------------------------
